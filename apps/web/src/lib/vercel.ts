@@ -32,12 +32,12 @@ function getMockRecords(): DnsRecord[] {
   ];
 }
 
-function parseVerificationRecords(records: VercelVerificationRecord[] | undefined): DnsRecord[] {
-  if (!records?.length) {
-    return getMockRecords();
-  }
+function getRoutingRecords(): DnsRecord[] {
+  return getMockRecords();
+}
 
-  const mapped = records
+function parseVerificationRecords(records: VercelVerificationRecord[] | undefined): DnsRecord[] {
+  return (records ?? [])
     .map((item) => {
       const rawType = (item.type ?? "").toUpperCase();
       const type = rawType === "TXT" ? "TXT" : rawType === "A" ? "A" : "CNAME";
@@ -51,8 +51,19 @@ function parseVerificationRecords(records: VercelVerificationRecord[] | undefine
       return { type, name, value } as DnsRecord;
     })
     .filter((item): item is DnsRecord => item !== null);
+}
 
-  return mapped.length ? mapped : getMockRecords();
+function mergeRecords(...sets: DnsRecord[][]): DnsRecord[] {
+  const deduped = new Map<string, DnsRecord>();
+
+  for (const set of sets) {
+    for (const record of set) {
+      const key = `${record.type}:${record.name}:${record.value}`;
+      deduped.set(key, record);
+    }
+  }
+
+  return [...deduped.values()];
 }
 
 function getVercelConfig() {
@@ -93,10 +104,12 @@ export async function addDomainToVercel(domainInput: string): Promise<VercelDoma
   }
 
   const data = (await response.json()) as VercelDomainCreateResponse;
+  const verificationRecords = parseVerificationRecords(data.verification);
+  const routingRecords = getRoutingRecords();
 
   return {
     verified: Boolean(data.verified),
-    records: parseVerificationRecords(data.verification),
+    records: mergeRecords(verificationRecords, routingRecords),
     provider: "vercel",
   };
 }

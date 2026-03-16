@@ -1,575 +1,76 @@
-"use client";
-
-import { Session } from "@supabase/supabase-js";
-import { FormEvent, useEffect, useMemo, useState } from "react";
-
-import { getSupabaseBrowserClient } from "@/lib/supabase-client";
-
-type Template = {
-  id: string;
-  name: string;
-  description: string;
-  accentClass: string;
-};
-
-type DnsRecord = {
-  type: "A" | "CNAME" | "TXT";
-  name: string;
-  value: string;
-};
-
-const templates: Template[] = [
-  {
-    id: "clinical-blue",
-    name: "Clinical Blue",
-    description: "Clean medical layout with hero, services and appointment CTA.",
-    accentClass: "bg-blue-500",
-  },
-  {
-    id: "research-light",
-    name: "Research Light",
-    description: "Academic-first layout for lab team, projects and publications.",
-    accentClass: "bg-emerald-500",
-  },
-  {
-    id: "diagnostics-pro",
-    name: "Diagnostics Pro",
-    description: "Conversion-focused diagnostics theme with trust blocks.",
-    accentClass: "bg-violet-500",
-  },
-];
-
-function slugify(value: string): string {
-  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-}
-
-function normalizeDomain(input: string): string {
-  return input.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/$/, "");
-}
+import Link from "next/link";
 
 export default function Home() {
-  const platformRootDomain =
-    process.env.NEXT_PUBLIC_PLATFORM_ROOT_DOMAIN ?? "labsites.app";
-
-  const [session, setSession] = useState<Session | null>(null);
-  const [authEmail, setAuthEmail] = useState("");
-  const [authPassword, setAuthPassword] = useState("");
-  const [isAuthLoading, setIsAuthLoading] = useState(false);
-  const [authError, setAuthError] = useState<string | null>(null);
-
-  const [siteId, setSiteId] = useState<string | null>(null);
-  const [selectedTemplateId, setSelectedTemplateId] = useState(templates[0].id);
-  const [labName, setLabName] = useState("");
-  const [contactEmail, setContactEmail] = useState("");
-  const [headline, setHeadline] = useState("");
-  const [description, setDescription] = useState("");
-  const [publishedSubdomain, setPublishedSubdomain] = useState<string | null>(null);
-  const [domainInput, setDomainInput] = useState("");
-  const [configuredDomain, setConfiguredDomain] = useState<string | null>(null);
-  const [dnsRecords, setDnsRecords] = useState<DnsRecord[]>([]);
-  const [isDomainVerified, setIsDomainVerified] = useState(false);
-  const [isPublishing, setIsPublishing] = useState(false);
-  const [isAddingDomain, setIsAddingDomain] = useState(false);
-  const [isVerifyingDomain, setIsVerifyingDomain] = useState(false);
-  const [apiError, setApiError] = useState<string | null>(null);
-  const [domainProvider, setDomainProvider] = useState<"mock" | "vercel" | null>(null);
-
-  const selectedTemplate = useMemo(
-    () => templates.find((item) => item.id === selectedTemplateId) ?? templates[0],
-    [selectedTemplateId],
-  );
-
-  const safeSlug = useMemo(() => slugify(labName) || "your-lab", [labName]);
-  const accessToken = session?.access_token ?? null;
-
-  useEffect(() => {
-    try {
-      const supabase = getSupabaseBrowserClient();
-      supabase.auth.getSession().then(({ data }) => {
-        setSession(data.session);
-      });
-
-      const {
-        data: { subscription },
-      } = supabase.auth.onAuthStateChange((_, nextSession) => {
-        setSession(nextSession);
-      });
-
-      return () => {
-        subscription.unsubscribe();
-      };
-    } catch (error) {
-      setAuthError(error instanceof Error ? error.message : "Supabase client init failed");
-      return undefined;
-    }
-  }, []);
-
-  async function runAuth(mode: "signup" | "signin") {
-    setAuthError(null);
-    setIsAuthLoading(true);
-
-    try {
-      const supabase = getSupabaseBrowserClient();
-      const credentials = { email: authEmail, password: authPassword };
-      const response =
-        mode === "signup"
-          ? await supabase.auth.signUp(credentials)
-          : await supabase.auth.signInWithPassword(credentials);
-
-      if (response.error) {
-        throw new Error(response.error.message);
-      }
-
-      if (response.data.session) {
-        setSession(response.data.session);
-      }
-    } catch (error) {
-      setAuthError(error instanceof Error ? error.message : "Authentication failed");
-    } finally {
-      setIsAuthLoading(false);
-    }
-  }
-
-  async function handleSignOut() {
-    setAuthError(null);
-    setApiError(null);
-    setSiteId(null);
-    setPublishedSubdomain(null);
-    setConfiguredDomain(null);
-    setDnsRecords([]);
-    setIsDomainVerified(false);
-
-    try {
-      const supabase = getSupabaseBrowserClient();
-      const { error } = await supabase.auth.signOut();
-      if (error) {
-        throw new Error(error.message);
-      }
-      setSession(null);
-    } catch (error) {
-      setAuthError(error instanceof Error ? error.message : "Sign out failed");
-    }
-  }
-
-  function authHeaders() {
-    if (!accessToken) {
-      throw new Error("Please sign in first");
-    }
-
-    return {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${accessToken}`,
-    };
-  }
-
-  async function handlePublish(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setApiError(null);
-    setIsPublishing(true);
-
-    try {
-      const createResponse = await fetch("/api/sites", {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({
-          templateId: selectedTemplateId,
-          labName,
-          contactEmail,
-          headline,
-          description,
-        }),
-      });
-
-      const createData = (await createResponse.json()) as {
-        site?: { id: string };
-        error?: string;
-      };
-
-      if (!createResponse.ok || !createData.site) {
-        throw new Error(createData.error ?? "Failed to create site");
-      }
-
-      setSiteId(createData.site.id);
-
-      const publishResponse = await fetch(`/api/sites/${createData.site.id}/publish`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      });
-
-      const publishData = (await publishResponse.json()) as {
-        site?: { subdomain: string | null };
-        error?: string;
-      };
-
-      if (!publishResponse.ok || !publishData.site) {
-        throw new Error(publishData.error ?? "Failed to publish site");
-      }
-
-      setPublishedSubdomain(
-        publishData.site.subdomain ?? `${safeSlug}.${platformRootDomain}`,
-      );
-    } catch (error) {
-      setApiError(error instanceof Error ? error.message : "Unknown publish error");
-    } finally {
-      setIsPublishing(false);
-    }
-  }
-
-  async function handleAddDomain() {
-    if (!domainInput.trim() || !siteId) {
-      return;
-    }
-
-    setApiError(null);
-    setIsAddingDomain(true);
-
-    try {
-      const response = await fetch(`/api/sites/${siteId}/domains`, {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({ domain: normalizeDomain(domainInput) }),
-      });
-
-      const data = (await response.json()) as {
-        domain?: {
-          domain: string;
-          records: DnsRecord[];
-          status: "pending_input" | "dns_configured" | "verified" | "active" | "failed";
-        };
-        provider?: "mock" | "vercel";
-        error?: string;
-      };
-
-      if (!response.ok || !data.domain) {
-        throw new Error(data.error ?? "Failed to add domain");
-      }
-
-      setConfiguredDomain(data.domain.domain);
-      setDnsRecords(data.domain.records);
-      setDomainProvider(data.provider ?? null);
-      setIsDomainVerified(data.domain.status === "verified" || data.domain.status === "active");
-    } catch (error) {
-      setApiError(error instanceof Error ? error.message : "Unknown add-domain error");
-    } finally {
-      setIsAddingDomain(false);
-    }
-  }
-
-  async function handleVerifyDomain() {
-    if (!configuredDomain || !siteId) {
-      return;
-    }
-
-    setApiError(null);
-    setIsVerifyingDomain(true);
-
-    try {
-      const response = await fetch(
-        `/api/sites/${siteId}/domains/${encodeURIComponent(configuredDomain)}/verify`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        },
-      );
-
-      const data = (await response.json()) as {
-        domain?: { status: "pending_input" | "dns_configured" | "verified" | "active" | "failed" };
-        provider?: "mock" | "vercel";
-        error?: string;
-      };
-
-      if (!response.ok || !data.domain) {
-        throw new Error(data.error ?? "Failed to verify domain");
-      }
-
-      setDomainProvider(data.provider ?? null);
-      setIsDomainVerified(data.domain.status === "verified" || data.domain.status === "active");
-    } catch (error) {
-      setApiError(error instanceof Error ? error.message : "Unknown verify-domain error");
-    } finally {
-      setIsVerifyingDomain(false);
-    }
-  }
-
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-100">
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-6 py-10">
-        <header className="rounded-2xl border border-slate-800 bg-slate-900/70 p-6">
-          <p className="text-sm text-slate-300">Lab Website Publisher</p>
-          <h1 className="mt-2 text-2xl font-semibold">Template to custom domain in minutes</h1>
-          <p className="mt-3 max-w-3xl text-sm text-slate-400">
-            MVP builder flow: login, choose template, add lab details, publish to subdomain,
-            then configure a custom domain with Vercel DNS records.
+    <main className="min-h-screen bg-white text-slate-900">
+      <section className="mx-auto max-w-6xl px-6 py-16">
+        <nav className="mb-14 flex items-center justify-between">
+          <p className="text-sm font-semibold tracking-wide text-sky-700">
+            LAB WEBSITE PUBLISHER
           </p>
-        </header>
-
-        <section className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-medium">1) Login</h2>
-              <p className="text-sm text-slate-400">Supabase email/password authentication.</p>
-            </div>
-            {session ? (
-              <div className="flex items-center gap-3">
-                <p className="text-sm text-slate-300">
-                  Signed in as <span className="font-medium">{session.user.email}</span>
-                </p>
-                <button
-                  type="button"
-                  onClick={handleSignOut}
-                  className="rounded-lg border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800"
-                >
-                  Sign out
-                </button>
-              </div>
-            ) : (
-              <div className="w-full max-w-xl space-y-2">
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <input
-                    type="email"
-                    value={authEmail}
-                    onChange={(event) => setAuthEmail(event.target.value)}
-                    placeholder="owner@lab.com"
-                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none ring-sky-400 focus:ring-2"
-                  />
-                  <input
-                    type="password"
-                    value={authPassword}
-                    onChange={(event) => setAuthPassword(event.target.value)}
-                    placeholder="Password"
-                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none ring-sky-400 focus:ring-2"
-                  />
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => runAuth("signin")}
-                    disabled={isAuthLoading}
-                    className="rounded-lg bg-sky-500 px-4 py-2 text-sm font-medium text-slate-950 disabled:bg-slate-600 disabled:text-slate-300"
-                  >
-                    {isAuthLoading ? "Loading..." : "Sign in"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => runAuth("signup")}
-                    disabled={isAuthLoading}
-                    className="rounded-lg border border-slate-700 px-4 py-2 text-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    Sign up
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-          {authError ? (
-            <div className="mt-3 rounded-lg border border-red-700 bg-red-950/30 p-3 text-sm text-red-200">
-              {authError}
-            </div>
-          ) : null}
-        </section>
-
-        <section className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6">
-          <h2 className="text-lg font-medium">2) Choose a template</h2>
-          <p className="mt-1 text-sm text-slate-400">
-            Select the base style for your lab website.
-          </p>
-          <div className="mt-4 grid gap-4 md:grid-cols-3">
-            {templates.map((template) => {
-              const isActive = template.id === selectedTemplateId;
-
-              return (
-                <button
-                  key={template.id}
-                  type="button"
-                  onClick={() => setSelectedTemplateId(template.id)}
-                  className={`rounded-xl border p-4 text-left ${
-                    isActive
-                      ? "border-sky-400 bg-slate-800/80"
-                      : "border-slate-700 bg-slate-900 hover:border-slate-500"
-                  }`}
-                >
-                  <div className={`h-2 w-12 rounded-full ${template.accentClass}`} />
-                  <h3 className="mt-3 text-base font-medium">{template.name}</h3>
-                  <p className="mt-1 text-sm text-slate-400">{template.description}</p>
-                </button>
-              );
-            })}
-          </div>
-        </section>
-
-        <section className="grid gap-6 lg:grid-cols-2">
-          <form
-            onSubmit={handlePublish}
-            className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6"
+          <Link
+            href="/dashboard"
+            className="rounded-lg border border-slate-300 px-4 py-2 text-sm hover:bg-slate-50"
           >
-            <h2 className="text-lg font-medium">3) Add lab details</h2>
-            <p className="mt-1 text-sm text-slate-400">
-              Fill in the core details that power your selected template.
+            Open dashboard
+          </Link>
+        </nav>
+
+        <div className="grid gap-8 lg:grid-cols-2 lg:items-center">
+          <div>
+            <h1 className="text-4xl font-bold tracking-tight sm:text-5xl">
+              Publish your lab website with custom domain in minutes
+            </h1>
+            <p className="mt-5 max-w-xl text-lg text-slate-600">
+              Sign in, pick a template, add your lab details, publish instantly, and
+              connect your own domain with guided DNS steps.
             </p>
-            <div className="mt-5 space-y-4">
-              <label className="block text-sm">
-                <span className="mb-1 block text-slate-300">Lab name</span>
-                <input
-                  required
-                  value={labName}
-                  onChange={(event) => setLabName(event.target.value)}
-                  placeholder="Acme Diagnostics"
-                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 outline-none ring-sky-400 focus:ring-2"
-                />
-              </label>
-              <label className="block text-sm">
-                <span className="mb-1 block text-slate-300">Contact email</span>
-                <input
-                  required
-                  type="email"
-                  value={contactEmail}
-                  onChange={(event) => setContactEmail(event.target.value)}
-                  placeholder="team@acmelabs.com"
-                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 outline-none ring-sky-400 focus:ring-2"
-                />
-              </label>
-              <label className="block text-sm">
-                <span className="mb-1 block text-slate-300">Homepage headline</span>
-                <input
-                  value={headline}
-                  onChange={(event) => setHeadline(event.target.value)}
-                  placeholder="Fast, accurate, trusted diagnostics."
-                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 outline-none ring-sky-400 focus:ring-2"
-                />
-              </label>
-              <label className="block text-sm">
-                <span className="mb-1 block text-slate-300">About description</span>
-                <textarea
-                  rows={3}
-                  value={description}
-                  onChange={(event) => setDescription(event.target.value)}
-                  placeholder="We support physicians and researchers with verified lab results."
-                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 outline-none ring-sky-400 focus:ring-2"
-                />
-              </label>
+            <div className="mt-8 flex flex-wrap gap-3">
+              <Link
+                href="/dashboard"
+                className="rounded-lg bg-sky-600 px-5 py-3 text-sm font-medium text-white hover:bg-sky-700"
+              >
+                Get started
+              </Link>
+              <a
+                href="#how-it-works"
+                className="rounded-lg border border-slate-300 px-5 py-3 text-sm hover:bg-slate-50"
+              >
+                How it works
+              </a>
             </div>
-            <button
-              type="submit"
-              disabled={!accessToken || isPublishing}
-              className="mt-5 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:bg-slate-600 disabled:text-slate-300"
-            >
-              {isPublishing ? "Publishing..." : "4) Publish website"}
-            </button>
-          </form>
-
-          <aside className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6">
-            <h2 className="text-lg font-medium">Live preview</h2>
-            <p className="mt-1 text-sm text-slate-400">Preview of chosen template and details.</p>
-            <div className="mt-4 rounded-xl border border-slate-700 bg-slate-950 p-4">
-              <p className="text-xs uppercase tracking-wide text-slate-400">{selectedTemplate.name}</p>
-              <h3 className="mt-2 text-xl font-semibold">{labName || "Your lab name"}</h3>
-              <p className="mt-1 text-sm text-slate-300">
-                {headline || "Your headline will appear here."}
-              </p>
-              <p className="mt-3 text-sm text-slate-400">
-                {description || "Add a short description to explain your lab specialties."}
-              </p>
-              <p className="mt-4 text-xs text-slate-500">{contactEmail || "contact@example.com"}</p>
-            </div>
-            {publishedSubdomain ? (
-              <div className="mt-4 rounded-lg border border-emerald-700 bg-emerald-950/40 p-3 text-sm">
-                Published successfully: <span className="font-medium">{publishedSubdomain}</span>
-              </div>
-            ) : (
-              <div className="mt-4 rounded-lg border border-slate-700 bg-slate-800/50 p-3 text-sm text-slate-300">
-                Publish to generate your managed subdomain.
-              </div>
-            )}
-          </aside>
-        </section>
-
-        <section className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6">
-          <h2 className="text-lg font-medium">5) Connect custom domain (Vercel flow)</h2>
-          <p className="mt-1 text-sm text-slate-400">
-            Enter a domain, then configure DNS records returned by Vercel.
-          </p>
-          <div className="mt-4 flex flex-col gap-3 md:flex-row">
-            <input
-              value={domainInput}
-              onChange={(event) => setDomainInput(event.target.value)}
-              placeholder="labname.com"
-              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 outline-none ring-sky-400 focus:ring-2"
-            />
-            <button
-              type="button"
-              onClick={handleAddDomain}
-              disabled={!publishedSubdomain || isAddingDomain}
-              className="rounded-lg bg-sky-500 px-4 py-2 text-sm font-medium text-slate-950 disabled:cursor-not-allowed disabled:bg-slate-600 disabled:text-slate-300"
-            >
-              {isAddingDomain ? "Adding..." : "Add domain"}
-            </button>
           </div>
 
-          {configuredDomain ? (
-            <div className="mt-4 space-y-3">
-              <div className="rounded-lg border border-slate-700 bg-slate-950 p-4">
-                <p className="text-sm text-slate-300">
-                  Domain: <span className="font-medium">{configuredDomain}</span>
-                </p>
-                <p className="mt-1 text-xs text-slate-500">
-                  Provider: {domainProvider === "vercel" ? "Vercel API" : "Mock (set Vercel envs)"}
-                </p>
-                <p className="mt-1 text-sm text-slate-400">
-                  Configure these DNS records at your registrar:
-                </p>
-                <div className="mt-3 overflow-x-auto">
-                  <table className="w-full min-w-[360px] text-left text-sm">
-                    <thead className="text-slate-400">
-                      <tr>
-                        <th className="pb-2">Type</th>
-                        <th className="pb-2">Name</th>
-                        <th className="pb-2">Value</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {dnsRecords.map((record) => (
-                        <tr key={`${record.type}-${record.name}-${record.value}`}>
-                          <td className="py-1 pr-3">{record.type}</td>
-                          <td className="py-1 pr-3">{record.name}</td>
-                          <td className="py-1 text-slate-300">{record.value}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleVerifyDomain}
-                  disabled={isVerifyingDomain}
-                  className="mt-4 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-semibold text-slate-950"
-                >
-                  {isVerifyingDomain ? "Verifying..." : "Verify DNS"}
-                </button>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-6">
+            <h2 className="text-lg font-semibold">What you get</h2>
+            <ul className="mt-4 space-y-3 text-sm text-slate-700">
+              <li>- Template-based website builder for labs</li>
+              <li>- One-click publish to managed subdomain</li>
+              <li>- Vercel-backed custom domain setup</li>
+              <li>- DNS verification + SSL via Vercel</li>
+              <li>- Multi-tenant host routing for live sites</li>
+            </ul>
+          </div>
+        </div>
+
+        <section id="how-it-works" className="mt-16 rounded-2xl border border-slate-200 p-6">
+          <h3 className="text-xl font-semibold">How it works</h3>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+            {[
+              "Login",
+              "Select template",
+              "Add details",
+              "Publish",
+              "Connect domain",
+            ].map((step, index) => (
+              <div key={step} className="rounded-xl bg-slate-50 p-4 text-sm">
+                <p className="text-slate-500">Step {index + 1}</p>
+                <p className="mt-1 font-medium">{step}</p>
               </div>
-              <div
-                className={`rounded-lg border p-3 text-sm ${
-                  isDomainVerified
-                    ? "border-emerald-700 bg-emerald-950/40 text-emerald-200"
-                    : "border-amber-700 bg-amber-950/30 text-amber-200"
-                }`}
-              >
-                {isDomainVerified
-                  ? `Domain active with HTTPS: https://${configuredDomain}`
-                  : "Waiting for DNS propagation. Click verify after updating records."}
-              </div>
-            </div>
-          ) : null}
-          {apiError ? (
-            <div className="mt-4 rounded-lg border border-red-700 bg-red-950/30 p-3 text-sm text-red-200">
-              {apiError}
-            </div>
-          ) : null}
+            ))}
+          </div>
         </section>
-      </div>
+      </section>
     </main>
   );
 }

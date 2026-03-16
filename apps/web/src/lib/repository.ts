@@ -85,6 +85,23 @@ export async function getSiteForUser(siteId: string, userId: string) {
   return data as SiteRow;
 }
 
+export async function getLatestSiteForUser(userId: string): Promise<SiteRow | null> {
+  const supabase = getSupabaseAdminClient();
+  const { data, error } = await supabase
+    .from("sites")
+    .select("*")
+    .eq("user_id", userId)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error || !data) {
+    return null;
+  }
+
+  return data as SiteRow;
+}
+
 export async function publishSiteForUser(siteId: string, userId: string) {
   const supabase = getSupabaseAdminClient();
   const { data, error } = await supabase
@@ -146,6 +163,23 @@ export async function getDomainForSite(siteId: string, domain: string) {
     .eq("site_id", siteId)
     .eq("domain", domain)
     .single();
+
+  if (error || !data) {
+    return null;
+  }
+
+  return data as DomainRow;
+}
+
+export async function getLatestDomainForSite(siteId: string): Promise<DomainRow | null> {
+  const supabase = getSupabaseAdminClient();
+  const { data, error } = await supabase
+    .from("domains")
+    .select("*")
+    .eq("site_id", siteId)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
   if (error || !data) {
     return null;

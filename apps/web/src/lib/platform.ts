@@ -2,12 +2,57 @@ function normalizeHost(host: string): string {
   return host.trim().toLowerCase().replace(/:\d+$/, "");
 }
 
+const DEFAULT_PLATFORM_ROOT_DOMAIN = "labsites.app";
+
+function normalizeDomainInput(input: string): string {
+  return input
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/.*/, "")
+    .replace(/[^a-z0-9.-]/g, "")
+    .replace(/\.+/g, ".")
+    .replace(/^-+|-+$/g, "")
+    .replace(/^\.+|\.+$/g, "");
+}
+
+function isValidRootDomain(domain: string): boolean {
+  if (!domain || domain.length < 3) {
+    return false;
+  }
+
+  if (!domain.includes(".")) {
+    return false;
+  }
+
+  // Simple safety check for hostname shape.
+  return /^[a-z0-9]+(?:[.-][a-z0-9]+)*\.[a-z]{2,}$/.test(domain);
+}
+
+function resolveRootDomain(...candidates: Array<string | undefined>): string {
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+
+    const normalized = normalizeDomainInput(candidate);
+    if (isValidRootDomain(normalized)) {
+      return normalized;
+    }
+  }
+
+  return DEFAULT_PLATFORM_ROOT_DOMAIN;
+}
+
 export function getPlatformRootDomain(): string {
-  return (
+  return resolveRootDomain(
     process.env.PLATFORM_ROOT_DOMAIN ??
-    process.env.NEXT_PUBLIC_PLATFORM_ROOT_DOMAIN ??
-    "labsites.app"
-  ).toLowerCase();
+      process.env.NEXT_PUBLIC_PLATFORM_ROOT_DOMAIN,
+  );
+}
+
+export function getClientPlatformRootDomain(): string {
+  return resolveRootDomain(process.env.NEXT_PUBLIC_PLATFORM_ROOT_DOMAIN);
 }
 
 export function isBaseAppHost(host: string): boolean {
