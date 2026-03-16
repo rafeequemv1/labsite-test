@@ -24,6 +24,16 @@ MVP app to let labs log in, pick a template, fill details, publish, and connect 
    - `NEXT_PUBLIC_SUPABASE_URL`
    - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
    - `SUPABASE_SERVICE_ROLE_KEY`
+   - `NEXT_PUBLIC_PLATFORM_ROOT_DOMAIN` (e.g. `labsites.app`)
+   - `PLATFORM_ROOT_DOMAIN` (same value)
 4. Restart `npm run dev`.
 
 The app now uses Supabase auth (email/password) and persists sites/domains per logged-in user.
+
+## Multi-tenant Domain Routing
+
+- Tenant hosts are resolved via middleware and rewritten to internal tenant pages.
+- Supported host resolution:
+  - Custom domains verified/active in `public.domains`
+  - Platform subdomains stored in `public.sites.subdomain`
+- Base app hosts (`localhost`, root platform domain, `*.vercel.app`) continue serving the builder UI.

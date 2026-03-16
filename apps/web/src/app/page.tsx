@@ -48,6 +48,9 @@ function normalizeDomain(input: string): string {
 }
 
 export default function Home() {
+  const platformRootDomain =
+    process.env.NEXT_PUBLIC_PLATFORM_ROOT_DOMAIN ?? "labsites.app";
+
   const [session, setSession] = useState<Session | null>(null);
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
@@ -204,7 +207,9 @@ export default function Home() {
         throw new Error(publishData.error ?? "Failed to publish site");
       }
 
-      setPublishedSubdomain(publishData.site.subdomain ?? `${safeSlug}.labsites.app`);
+      setPublishedSubdomain(
+        publishData.site.subdomain ?? `${safeSlug}.${platformRootDomain}`,
+      );
     } catch (error) {
       setApiError(error instanceof Error ? error.message : "Unknown publish error");
     } finally {

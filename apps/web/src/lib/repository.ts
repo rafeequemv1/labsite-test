@@ -1,7 +1,8 @@
 import { DnsRecord } from "./types";
+import { getPlatformRootDomain } from "./platform";
 import { getSupabaseAdminClient } from "./supabase-server";
 
-type SiteRow = {
+export type SiteRow = {
   id: string;
   user_id: string;
   template_id: string;
@@ -15,7 +16,7 @@ type SiteRow = {
   updated_at: string;
 };
 
-type DomainRow = {
+export type DomainRow = {
   site_id: string;
   domain: string;
   status: "pending_input" | "dns_configured" | "verified" | "active" | "failed";
@@ -39,6 +40,7 @@ export async function createSiteForUser(input: {
 }) {
   const now = new Date().toISOString();
   const subdomainSlug = slugify(input.labName);
+  const platformRootDomain = getPlatformRootDomain();
   const supabase = getSupabaseAdminClient();
 
   const payload = {
@@ -49,7 +51,7 @@ export async function createSiteForUser(input: {
     headline: input.headline,
     description: input.description,
     status: "draft" as const,
-    subdomain: subdomainSlug ? `${subdomainSlug}.labsites.app` : null,
+    subdomain: subdomainSlug ? `${subdomainSlug}.${platformRootDomain}` : null,
     created_at: now,
     updated_at: now,
   };
@@ -61,6 +63,10 @@ export async function createSiteForUser(input: {
   }
 
   return data as SiteRow;
+}
+
+function normalizeHost(input: string): string {
+  return input.trim().toLowerCase().replace(/:\d+$/, "");
 }
 
 export async function getSiteForUser(siteId: string, userId: string) {
@@ -171,4 +177,49 @@ export async function updateDomainVerification(input: {
   }
 
   return data as DomainRow;
+}
+
+export async function getPublishedSiteByHost(host: string): Promise<SiteRow | null> {
+  const normalizedHost = normalizeHost(host);
+  const supabase = getSupabaseAdminClient();
+  const rootDomain = getPlatformRootDomain();
+
+  const { data: customDomainRecord } = await supabase
+    .from("domains")
+    .select("site_id,status")
+    .eq("domain", normalizedHost)
+    .in("status", ["active", "verified"])
+    .maybeSingle();
+
+  if (customDomainRecord?.site_id) {
+    const { data: customDomainSite } = await supabase
+      .from("sites")
+      .select("*")
+      .eq("id", customDomainRecord.site_id)
+      .eq("status", "published")
+      .maybeSingle();
+
+    if (customDomainSite) {
+      return customDomainSite as SiteRow;
+    }
+  }
+
+  if (
+    normalizedHost.endsWith(`.${rootDomain}`) &&
+    normalizedHost !== rootDomain &&
+    normalizedHost !== `www.${rootDomain}`
+  ) {
+    const { data: subdomainSite } = await supabase
+      .from("sites")
+      .select("*")
+      .eq("subdomain", normalizedHost)
+      .eq("status", "published")
+      .maybeSingle();
+
+    if (subdomainSite) {
+      return subdomainSite as SiteRow;
+    }
+  }
+
+  return null;
 }
