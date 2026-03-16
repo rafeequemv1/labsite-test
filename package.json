@@ -1,0 +1,20 @@
+{
+  "name": "customdomain-test",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "npm run dev --workspace web",
+    "build": "npm run build --workspace web",
+    "start": "npm run start --workspace web",
+    "lint": "npm run lint --workspace web",
+    "check": "npm run lint --workspace web"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "UNLICENSED",
+  "description": "Lab website publisher with custom domains",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ]
+}
