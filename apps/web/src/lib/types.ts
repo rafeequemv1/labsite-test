@@ -14,6 +14,7 @@ export type SiteRecord = {
   description: string;
   status: "draft" | "published";
   subdomain: string | null;
+  activeDomain: string | null;
   createdAt: string;
   updatedAt: string;
 };

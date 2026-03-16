@@ -20,6 +20,7 @@ create table if not exists public.sites (
   template_data jsonb not null default '{}'::jsonb,
   status text not null check (status in ('draft', 'published')) default 'draft',
   subdomain text,
+  active_domain text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );

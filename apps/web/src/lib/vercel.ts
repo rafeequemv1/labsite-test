@@ -142,3 +142,32 @@ export async function checkDomainVerification(
   const data = (await response.json()) as VercelDomainStatusResponse;
   return { verified: Boolean(data.verified), provider: "vercel" };
 }
+
+export async function removeDomainFromVercel(domainInput: string): Promise<{
+  provider: "vercel" | "mock";
+}> {
+  const domain = normalizeDomain(domainInput);
+  const config = getVercelConfig();
+
+  if (!config) {
+    return { provider: "mock" };
+  }
+
+  const response = await fetch(
+    `${config.baseUrl}/${encodeURIComponent(domain)}${config.query}`,
+    {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${config.token}`,
+      },
+    },
+  );
+
+  // Deleting a missing domain should not hard-fail UX.
+  if (!response.ok && response.status !== 404) {
+    const details = await response.text();
+    throw new Error(`Vercel remove-domain failed (${response.status}): ${details}`);
+  }
+
+  return { provider: "vercel" };
+}

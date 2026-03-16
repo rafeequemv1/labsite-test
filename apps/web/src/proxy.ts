@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { normalizeIncomingHost, shouldRouteToTenant } from "@/lib/platform";
+import {
+  getPlatformRootDomain,
+  getPreviewPrefix,
+  normalizeIncomingHost,
+  shouldRouteToTenant,
+} from "@/lib/platform";
 
 function isBypassedPath(pathname: string): boolean {
   return (
@@ -9,7 +14,9 @@ function isBypassedPath(pathname: string): boolean {
     pathname.startsWith("/site") ||
     pathname.startsWith("/favicon.ico") ||
     pathname.startsWith("/robots.txt") ||
-    pathname.startsWith("/sitemap.xml")
+    pathname.startsWith("/sitemap.xml") ||
+    pathname.startsWith("/llms.txt") ||
+    pathname.startsWith("/.well-known")
   );
 }
 
@@ -25,6 +32,14 @@ export function proxy(request: NextRequest) {
   }
 
   const host = normalizeIncomingHost(hostHeader);
+  const previewPrefix = getPreviewPrefix(host);
+  if (previewPrefix) {
+    const previewTenantHost = `${previewPrefix}.${getPlatformRootDomain()}`;
+    const rewriteUrl = request.nextUrl.clone();
+    rewriteUrl.pathname = `/site/${previewTenantHost}${pathname === "/" ? "" : pathname}`;
+    return NextResponse.rewrite(rewriteUrl);
+  }
+
   if (!shouldRouteToTenant(host)) {
     return NextResponse.next();
   }

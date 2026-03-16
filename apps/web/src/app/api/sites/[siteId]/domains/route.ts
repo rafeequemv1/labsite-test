@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 
-import { getSiteForUser, listDomainsForSite, upsertDomainForSite } from "@/lib/repository";
+import {
+  getSiteForUser,
+  listDomainsForSite,
+  setActiveDomainForSite,
+  upsertDomainForSite,
+} from "@/lib/repository";
 import { getRequestUser } from "@/lib/supabase-server";
 import { addDomainToVercel } from "@/lib/vercel";
 
@@ -13,7 +18,14 @@ type AddDomainBody = {
 };
 
 function normalizeDomain(input: string): string {
-  return input.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/$/, "");
+  return input
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/.*/, "")
+    .replace(/[^a-z0-9.-]/g, "")
+    .replace(/\.+/g, ".")
+    .replace(/^\.+|\.+$/g, "");
 }
 
 export async function POST(request: Request, { params }: Params) {
@@ -41,6 +53,14 @@ export async function POST(request: Request, { params }: Params) {
       records: vercelResult.records,
       vercelVerified: vercelResult.verified,
     });
+
+    if (!site.active_domain) {
+      await setActiveDomainForSite({
+        siteId,
+        userId: user.id,
+        activeDomain: domain,
+      });
+    }
 
     return NextResponse.json({
       domain: record,

@@ -81,3 +81,17 @@ export function shouldRouteToTenant(host: string): boolean {
 export function normalizeIncomingHost(host: string): string {
   return normalizeHost(host);
 }
+
+export function getPreviewPrefix(host: string): string | null {
+  const cleanHost = normalizeHost(host);
+  if (!cleanHost.includes("---")) {
+    return null;
+  }
+
+  const [prefix] = cleanHost.split("---");
+  if (!prefix) {
+    return null;
+  }
+
+  return prefix.replace(/[^a-z0-9-]/g, "").replace(/^-+|-+$/g, "") || null;
+}

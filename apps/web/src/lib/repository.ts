@@ -15,6 +15,7 @@ export type SiteRow = {
   template_data: Record<string, unknown>;
   status: "draft" | "published";
   subdomain: string | null;
+  active_domain: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -39,6 +40,11 @@ export type WildcardRow = {
   updated_at: string;
 };
 
+type WildcardAvailability = {
+  available: boolean;
+  existing: WildcardRow | null;
+};
+
 function slugify(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
@@ -57,8 +63,9 @@ export async function createSiteForUser(input: {
   const subdomainSlug = slugify(input.labName);
   const platformRootDomain = getPlatformRootDomain();
   const supabase = getSupabaseAdminClient();
+  const generatedSubdomain = subdomainSlug ? `${subdomainSlug}.${platformRootDomain}` : null;
 
-  const payload = {
+  const basePayload = {
     user_id: input.userId,
     owner_name: input.ownerName,
     template_id: input.templateId,
@@ -75,12 +82,33 @@ export async function createSiteForUser(input: {
         contactEmail: input.contactEmail,
       }),
     status: "draft" as const,
-    subdomain: subdomainSlug ? `${subdomainSlug}.${platformRootDomain}` : null,
+    subdomain: generatedSubdomain,
     created_at: now,
     updated_at: now,
   };
 
-  const { data, error } = await supabase.from("sites").insert(payload).select("*").single();
+  const payloadWithActiveDomain = {
+    ...basePayload,
+    active_domain: generatedSubdomain,
+  };
+
+  let { data, error } = await supabase
+    .from("sites")
+    .insert(payloadWithActiveDomain)
+    .select("*")
+    .single();
+
+  const missingActiveDomainColumn =
+    Boolean(error?.message?.includes("'active_domain'")) ||
+    Boolean(error?.message?.includes("active_domain column")) ||
+    Boolean(error?.message?.includes("schema cache"));
+
+  // Backward compatibility for environments where migration not applied yet.
+  if (error && missingActiveDomainColumn) {
+    const fallbackResult = await supabase.from("sites").insert(basePayload).select("*").single();
+    data = fallbackResult.data;
+    error = fallbackResult.error;
+  }
 
   if (error || !data) {
     throw new Error(`Failed to create site: ${error?.message ?? "Unknown error"}`);
@@ -170,6 +198,32 @@ export async function listSitesForUser(userId: string): Promise<SiteRow[]> {
   return data as SiteRow[];
 }
 
+export async function deleteSiteForUser(siteId: string, userId: string): Promise<void> {
+  const supabase = getSupabaseAdminClient();
+  const now = new Date().toISOString();
+
+  // Release any wildcard currently attached to this site.
+  await supabase
+    .from("wildcard_domains")
+    .update({
+      status: "available",
+      site_id: null,
+      reserved_by: null,
+      updated_at: now,
+    })
+    .eq("site_id", siteId);
+
+  const { error } = await supabase
+    .from("sites")
+    .delete()
+    .eq("id", siteId)
+    .eq("user_id", userId);
+
+  if (error) {
+    throw new Error(`Failed to delete site: ${error.message}`);
+  }
+}
+
 export async function publishSiteForUser(
   siteId: string,
   userId: string,
@@ -214,6 +268,37 @@ export async function listWildcards(): Promise<WildcardRow[]> {
   return data as WildcardRow[];
 }
 
+export async function getWildcardByHostname(hostname: string): Promise<WildcardRow | null> {
+  const supabase = getSupabaseAdminClient();
+  const { data, error } = await supabase
+    .from("wildcard_domains")
+    .select("*")
+    .eq("hostname", hostname)
+    .maybeSingle();
+
+  if (error || !data) {
+    return null;
+  }
+
+  return data as WildcardRow;
+}
+
+export async function checkWildcardAvailability(
+  hostname: string,
+  siteId?: string,
+): Promise<WildcardAvailability> {
+  const existing = await getWildcardByHostname(hostname);
+  if (!existing) {
+    return { available: true, existing: null };
+  }
+
+  if (!existing.site_id || existing.site_id === siteId) {
+    return { available: true, existing };
+  }
+
+  return { available: false, existing };
+}
+
 export async function reserveWildcardForSite(input: {
   hostname: string;
   siteId: string;
@@ -240,6 +325,129 @@ export async function reserveWildcardForSite(input: {
   }
 
   return data as WildcardRow;
+}
+
+export async function assignWildcardHostnameForSite(input: {
+  hostname: string;
+  siteId: string;
+  userId: string;
+}): Promise<WildcardRow> {
+  const supabase = getSupabaseAdminClient();
+  const now = new Date().toISOString();
+
+  const availability = await checkWildcardAvailability(input.hostname, input.siteId);
+  if (!availability.available) {
+    throw new Error("Wildcard unavailable");
+  }
+
+  let wildcard = availability.existing;
+
+  if (wildcard) {
+    const { data, error } = await supabase
+      .from("wildcard_domains")
+      .update({
+        status: "active",
+        site_id: input.siteId,
+        reserved_by: input.userId,
+        updated_at: now,
+      })
+      .eq("id", wildcard.id)
+      .select("*")
+      .single();
+
+    if (error || !data) {
+      throw new Error(`Failed to assign wildcard: ${error?.message ?? "Unknown error"}`);
+    }
+    wildcard = data as WildcardRow;
+  } else {
+    const { data, error } = await supabase
+      .from("wildcard_domains")
+      .insert({
+        hostname: input.hostname,
+        status: "active",
+        site_id: input.siteId,
+        reserved_by: input.userId,
+        created_at: now,
+        updated_at: now,
+      })
+      .select("*")
+      .single();
+
+    if (error || !data) {
+      throw new Error(`Failed to create wildcard: ${error?.message ?? "Unknown error"}`);
+    }
+    wildcard = data as WildcardRow;
+  }
+
+  await supabase
+    .from("wildcard_domains")
+    .update({
+      status: "available",
+      site_id: null,
+      reserved_by: null,
+      updated_at: now,
+    })
+    .eq("site_id", input.siteId)
+    .neq("hostname", input.hostname);
+
+  return wildcard;
+}
+
+export async function updateSiteSubdomainForUser(input: {
+  siteId: string;
+  userId: string;
+  subdomain: string;
+}): Promise<SiteRow> {
+  const supabase = getSupabaseAdminClient();
+  const current = await getSiteForUser(input.siteId, input.userId);
+  const shouldMoveActiveDomain =
+    !current?.active_domain || current.active_domain === current.subdomain;
+
+  const payload: { subdomain: string; updated_at: string; active_domain?: string } = {
+    subdomain: input.subdomain,
+    updated_at: new Date().toISOString(),
+  };
+  if (shouldMoveActiveDomain) {
+    payload.active_domain = input.subdomain;
+  }
+
+  const { data, error } = await supabase
+    .from("sites")
+    .update(payload)
+    .eq("id", input.siteId)
+    .eq("user_id", input.userId)
+    .select("*")
+    .single();
+
+  if (error || !data) {
+    throw new Error(`Failed to update site subdomain: ${error?.message ?? "Unknown error"}`);
+  }
+
+  return data as SiteRow;
+}
+
+export async function setActiveDomainForSite(input: {
+  siteId: string;
+  userId: string;
+  activeDomain: string | null;
+}): Promise<SiteRow> {
+  const supabase = getSupabaseAdminClient();
+  const { data, error } = await supabase
+    .from("sites")
+    .update({
+      active_domain: input.activeDomain,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", input.siteId)
+    .eq("user_id", input.userId)
+    .select("*")
+    .single();
+
+  if (error || !data) {
+    throw new Error(`Failed to set active domain: ${error?.message ?? "Unknown error"}`);
+  }
+
+  return data as SiteRow;
 }
 
 export async function upsertDomainForSite(input: {
@@ -321,6 +529,28 @@ export async function listDomainsForSite(siteId: string): Promise<DomainRow[]> {
   }
 
   return data as DomainRow[];
+}
+
+export async function deleteDomainForSite(siteId: string, domain: string): Promise<void> {
+  const supabase = getSupabaseAdminClient();
+  await supabase
+    .from("sites")
+    .update({
+      active_domain: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", siteId)
+    .eq("active_domain", domain);
+
+  const { error } = await supabase
+    .from("domains")
+    .delete()
+    .eq("site_id", siteId)
+    .eq("domain", domain);
+
+  if (error) {
+    throw new Error(`Failed to delete domain: ${error.message}`);
+  }
 }
 
 export async function updateDomainVerification(input: {
