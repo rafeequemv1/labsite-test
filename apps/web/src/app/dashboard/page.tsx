@@ -19,23 +19,55 @@ type DnsRecord = {
   value: string;
 };
 
+type SiteSummary = {
+  id: string;
+  template_id: string;
+  lab_name: string;
+  contact_email: string;
+  headline: string;
+  description: string;
+  subdomain: string | null;
+  status: "draft" | "published";
+  template_data?: { researchAreas?: string[] };
+  updated_at: string;
+};
+
+type DomainSummary = {
+  domain: string;
+  status: "pending_input" | "dns_configured" | "verified" | "active" | "failed";
+  records: DnsRecord[];
+};
+
+type WildcardSummary = {
+  id: string;
+  hostname: string;
+  status: "available" | "reserved" | "active";
+  site_id: string | null;
+};
+
 const templates: Template[] = [
+  {
+    id: "modern-elegant-lab",
+    name: "Modern Elegant Lab",
+    description: "Premium layout with rich research and quality sections.",
+    accentClass: "bg-slate-900",
+  },
   {
     id: "clinical-blue",
     name: "Clinical Blue",
-    description: "Clean medical layout with hero, services and appointment CTA.",
+    description: "Clean medical layout with hero, services and CTA.",
     accentClass: "bg-blue-500",
   },
   {
     id: "research-light",
     name: "Research Light",
-    description: "Academic-first layout for lab team, projects and publications.",
+    description: "Academic-first layout for lab teams and publications.",
     accentClass: "bg-emerald-500",
   },
   {
     id: "diagnostics-pro",
     name: "Diagnostics Pro",
-    description: "Conversion-focused diagnostics theme with trust blocks.",
+    description: "Conversion-focused diagnostics with trust blocks.",
     accentClass: "bg-violet-500",
   },
 ];
@@ -51,13 +83,23 @@ function normalizeDomain(input: string): string {
 export default function DashboardPage() {
   const platformRootDomain = getClientPlatformRootDomain();
 
+  const [activeMenu, setActiveMenu] = useState<"home" | "research">("home");
+  const [showDraftPreview, setShowDraftPreview] = useState(false);
+
   const [session, setSession] = useState<Session | null>(null);
+  const [authName, setAuthName] = useState("");
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [isAuthLoading, setIsAuthLoading] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
 
-  const [siteId, setSiteId] = useState<string | null>(null);
+  const [sites, setSites] = useState<SiteSummary[]>([]);
+  const [selectedSiteId, setSelectedSiteId] = useState<string | null>(null);
+  const [domains, setDomains] = useState<DomainSummary[]>([]);
+  const [selectedDomain, setSelectedDomain] = useState<string | null>(null);
+  const [wildcards, setWildcards] = useState<WildcardSummary[]>([]);
+  const [selectedWildcardHostname, setSelectedWildcardHostname] = useState<string>("");
+
   const [selectedTemplateId, setSelectedTemplateId] = useState(templates[0].id);
   const [labName, setLabName] = useState("");
   const [contactEmail, setContactEmail] = useState("");
@@ -65,22 +107,143 @@ export default function DashboardPage() {
   const [description, setDescription] = useState("");
   const [publishedSubdomain, setPublishedSubdomain] = useState<string | null>(null);
   const [domainInput, setDomainInput] = useState("");
-  const [configuredDomain, setConfiguredDomain] = useState<string | null>(null);
-  const [dnsRecords, setDnsRecords] = useState<DnsRecord[]>([]);
-  const [isDomainVerified, setIsDomainVerified] = useState(false);
+  const [researchInput, setResearchInput] = useState("");
+  const [researchAreas, setResearchAreas] = useState<string[]>([
+    "Infectious Disease Biomarkers",
+    "Molecular Oncology Panels",
+    "Precision Diagnostics AI Workflows",
+  ]);
+
   const [isPublishing, setIsPublishing] = useState(false);
   const [isAddingDomain, setIsAddingDomain] = useState(false);
   const [isVerifyingDomain, setIsVerifyingDomain] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
-  const [domainProvider, setDomainProvider] = useState<"mock" | "vercel" | null>(null);
 
-  const selectedTemplate = useMemo(
-    () => templates.find((item) => item.id === selectedTemplateId) ?? templates[0],
-    [selectedTemplateId],
+  const accessToken = session?.access_token ?? null;
+  const safeSlug = useMemo(() => slugify(labName) || "your-lab", [labName]);
+
+  const currentDomainRecord = useMemo(
+    () => domains.find((item) => item.domain === selectedDomain) ?? null,
+    [domains, selectedDomain],
   );
 
-  const safeSlug = useMemo(() => slugify(labName) || "your-lab", [labName]);
-  const accessToken = session?.access_token ?? null;
+  const isDomainVerified =
+    currentDomainRecord?.status === "verified" || currentDomainRecord?.status === "active";
+
+  const previewUrl = isDomainVerified && selectedDomain
+    ? `https://${selectedDomain}`
+    : publishedSubdomain
+      ? `https://${publishedSubdomain}`
+      : null;
+
+  function authHeaders() {
+    if (!accessToken) {
+      throw new Error("Please sign in first");
+    }
+
+    return {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    };
+  }
+
+  function clearEditorForNewSite() {
+    setSelectedSiteId(null);
+    setSelectedTemplateId(templates[0].id);
+    setLabName("");
+    setContactEmail("");
+    setHeadline("");
+    setDescription("");
+    setPublishedSubdomain(null);
+    setDomainInput("");
+    setDomains([]);
+    setSelectedDomain(null);
+    setResearchAreas([
+      "Infectious Disease Biomarkers",
+      "Molecular Oncology Panels",
+      "Precision Diagnostics AI Workflows",
+    ]);
+    setShowDraftPreview(false);
+    setSelectedWildcardHostname("");
+  }
+
+  function hydrateEditorFromSite(site: SiteSummary) {
+    setSelectedSiteId(site.id);
+    setLabName(site.lab_name ?? "");
+    setContactEmail(site.contact_email ?? "");
+    setHeadline(site.headline ?? "");
+    setDescription(site.description ?? "");
+    setPublishedSubdomain(site.subdomain ?? `${slugify(site.lab_name || "")}.${platformRootDomain}`);
+    setSelectedTemplateId(
+      templates.some((template) => template.id === site.template_id)
+        ? site.template_id
+        : templates[0].id,
+    );
+    if (Array.isArray(site.template_data?.researchAreas)) {
+      setResearchAreas(site.template_data.researchAreas);
+    }
+    setSelectedWildcardHostname("");
+  }
+
+  async function loadDomains(siteId: string, token: string) {
+    const response = await fetch(`/api/sites/${siteId}/domains`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    const data = (await response.json()) as { domains?: DomainSummary[]; error?: string };
+    if (!response.ok) {
+      throw new Error(data.error ?? "Failed to fetch site domains");
+    }
+
+    const list = data.domains ?? [];
+    setDomains(list);
+    setSelectedDomain(list[0]?.domain ?? null);
+  }
+
+  async function loadSites(token: string) {
+    const response = await fetch("/api/sites", {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    const data = (await response.json()) as { sites?: SiteSummary[]; error?: string };
+    if (!response.ok) {
+      throw new Error(data.error ?? "Failed to fetch sites");
+    }
+
+    const list = data.sites ?? [];
+    setSites(list);
+
+    if (!list.length) {
+      clearEditorForNewSite();
+      return;
+    }
+
+    const preferred = list.find((site) => site.id === selectedSiteId) ?? list[0];
+    hydrateEditorFromSite(preferred);
+    await loadDomains(preferred.id, token);
+  }
+
+  async function loadWildcards(token: string) {
+    const response = await fetch("/api/wildcards", {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    const data = (await response.json()) as { wildcards?: WildcardSummary[]; error?: string };
+    if (!response.ok) {
+      throw new Error(data.error ?? "Failed to fetch wildcards");
+    }
+
+    setWildcards(data.wildcards ?? []);
+  }
 
   useEffect(() => {
     try {
@@ -105,77 +268,21 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    async function restoreLatestState() {
+    async function bootstrapDashboard() {
       if (!accessToken) {
         return;
       }
 
       try {
-        const response = await fetch("/api/sites/latest", {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        });
-
-        const data = (await response.json()) as {
-          site: {
-            id: string;
-            lab_name: string;
-            contact_email: string;
-            headline: string;
-            description: string;
-            template_id: string;
-            subdomain: string | null;
-          } | null;
-          domain: {
-            domain: string;
-            records: DnsRecord[];
-            status: "pending_input" | "dns_configured" | "verified" | "active" | "failed";
-          } | null;
-          error?: string;
-        };
-
-        if (!response.ok) {
-          throw new Error(data.error ?? "Failed to restore latest site state");
-        }
-
-        const restoredSite = data.site;
-        if (!restoredSite) {
-          return;
-        }
-
-        setSiteId(restoredSite.id);
-        setLabName(restoredSite.lab_name ?? "");
-        setContactEmail(restoredSite.contact_email ?? "");
-        setHeadline(restoredSite.headline ?? "");
-        setDescription(restoredSite.description ?? "");
-
-        const isKnownTemplate = templates.some(
-          (template) => template.id === restoredSite.template_id,
-        );
-        setSelectedTemplateId(isKnownTemplate ? restoredSite.template_id : templates[0].id);
-        setPublishedSubdomain(
-          restoredSite.subdomain ??
-            `${slugify(restoredSite.lab_name || "")}.${platformRootDomain}`,
-        );
-
-        if (data.domain) {
-          setConfiguredDomain(data.domain.domain);
-          setDnsRecords(data.domain.records ?? []);
-          setIsDomainVerified(data.domain.status === "verified" || data.domain.status === "active");
-        } else {
-          setConfiguredDomain(null);
-          setDnsRecords([]);
-          setIsDomainVerified(false);
-        }
+        await loadSites(accessToken);
+        await loadWildcards(accessToken);
       } catch (error) {
-        setApiError(error instanceof Error ? error.message : "State restore failed");
+        setApiError(error instanceof Error ? error.message : "Failed to load dashboard");
       }
     }
 
-    void restoreLatestState();
-  }, [accessToken, platformRootDomain]);
+    void bootstrapDashboard();
+  }, [accessToken]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function runAuth(mode: "signup" | "signin") {
     setAuthError(null);
@@ -186,7 +293,14 @@ export default function DashboardPage() {
       const credentials = { email: authEmail, password: authPassword };
       const response =
         mode === "signup"
-          ? await supabase.auth.signUp(credentials)
+          ? await supabase.auth.signUp({
+              ...credentials,
+              options: {
+                data: {
+                  full_name: authName.trim() || authEmail.split("@")[0] || "Lab Owner",
+                },
+              },
+            })
           : await supabase.auth.signInWithPassword(credentials);
 
       if (response.error) {
@@ -206,11 +320,6 @@ export default function DashboardPage() {
   async function handleSignOut() {
     setAuthError(null);
     setApiError(null);
-    setSiteId(null);
-    setPublishedSubdomain(null);
-    setConfiguredDomain(null);
-    setDnsRecords([]);
-    setIsDomainVerified(false);
 
     try {
       const supabase = getSupabaseBrowserClient();
@@ -219,25 +328,11 @@ export default function DashboardPage() {
         throw new Error(error.message);
       }
       setSession(null);
-      setSelectedTemplateId(templates[0].id);
-      setLabName("");
-      setContactEmail("");
-      setHeadline("");
-      setDescription("");
+      setSites([]);
+      clearEditorForNewSite();
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : "Sign out failed");
     }
-  }
-
-  function authHeaders() {
-    if (!accessToken) {
-      throw new Error("Please sign in first");
-    }
-
-    return {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${accessToken}`,
-    };
   }
 
   async function handlePublish(event: FormEvent<HTMLFormElement>) {
@@ -246,6 +341,10 @@ export default function DashboardPage() {
     setIsPublishing(true);
 
     try {
+      if (!accessToken) {
+        throw new Error("Please sign in first");
+      }
+
       const createResponse = await fetch("/api/sites", {
         method: "POST",
         headers: authHeaders(),
@@ -255,11 +354,14 @@ export default function DashboardPage() {
           contactEmail,
           headline,
           description,
+          templateData: {
+            researchAreas,
+          },
         }),
       });
 
       const createData = (await createResponse.json()) as {
-        site?: { id: string };
+        site?: { id: string; subdomain: string | null };
         error?: string;
       };
 
@@ -267,13 +369,15 @@ export default function DashboardPage() {
         throw new Error(createData.error ?? "Failed to create site");
       }
 
-      setSiteId(createData.site.id);
+      const createdSiteId = createData.site.id;
+      setSelectedSiteId(createdSiteId);
 
-      const publishResponse = await fetch(`/api/sites/${createData.site.id}/publish`, {
+      const publishResponse = await fetch(`/api/sites/${createdSiteId}/publish`, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
+        headers: authHeaders(),
+        body: JSON.stringify({
+          wildcardHostname: selectedWildcardHostname || undefined,
+        }),
       });
 
       const publishData = (await publishResponse.json()) as {
@@ -288,6 +392,9 @@ export default function DashboardPage() {
       setPublishedSubdomain(
         publishData.site.subdomain ?? `${safeSlug}.${platformRootDomain}`,
       );
+
+      await loadSites(accessToken);
+      await loadWildcards(accessToken);
     } catch (error) {
       setApiError(error instanceof Error ? error.message : "Unknown publish error");
     } finally {
@@ -296,7 +403,7 @@ export default function DashboardPage() {
   }
 
   async function handleAddDomain() {
-    if (!domainInput.trim() || !siteId) {
+    if (!domainInput.trim() || !selectedSiteId) {
       return;
     }
 
@@ -304,7 +411,7 @@ export default function DashboardPage() {
     setIsAddingDomain(true);
 
     try {
-      const response = await fetch(`/api/sites/${siteId}/domains`, {
+      const response = await fetch(`/api/sites/${selectedSiteId}/domains`, {
         method: "POST",
         headers: authHeaders(),
         body: JSON.stringify({ domain: normalizeDomain(domainInput) }),
@@ -313,10 +420,7 @@ export default function DashboardPage() {
       const data = (await response.json()) as {
         domain?: {
           domain: string;
-          records: DnsRecord[];
-          status: "pending_input" | "dns_configured" | "verified" | "active" | "failed";
         };
-        provider?: "mock" | "vercel";
         error?: string;
       };
 
@@ -324,10 +428,9 @@ export default function DashboardPage() {
         throw new Error(data.error ?? "Failed to add domain");
       }
 
-      setConfiguredDomain(data.domain.domain);
-      setDnsRecords(data.domain.records);
-      setDomainProvider(data.provider ?? null);
-      setIsDomainVerified(data.domain.status === "verified" || data.domain.status === "active");
+      await loadDomains(selectedSiteId, accessToken as string);
+      setSelectedDomain(data.domain.domain);
+      setDomainInput("");
     } catch (error) {
       setApiError(error instanceof Error ? error.message : "Unknown add-domain error");
     } finally {
@@ -336,7 +439,7 @@ export default function DashboardPage() {
   }
 
   async function handleVerifyDomain() {
-    if (!configuredDomain || !siteId) {
+    if (!selectedDomain || !selectedSiteId) {
       return;
     }
 
@@ -345,7 +448,7 @@ export default function DashboardPage() {
 
     try {
       const response = await fetch(
-        `/api/sites/${siteId}/domains/${encodeURIComponent(configuredDomain)}/verify`,
+        `/api/sites/${selectedSiteId}/domains/${encodeURIComponent(selectedDomain)}/verify`,
         {
           method: "POST",
           headers: {
@@ -355,17 +458,14 @@ export default function DashboardPage() {
       );
 
       const data = (await response.json()) as {
-        domain?: { status: "pending_input" | "dns_configured" | "verified" | "active" | "failed" };
-        provider?: "mock" | "vercel";
         error?: string;
       };
 
-      if (!response.ok || !data.domain) {
+      if (!response.ok) {
         throw new Error(data.error ?? "Failed to verify domain");
       }
 
-      setDomainProvider(data.provider ?? null);
-      setIsDomainVerified(data.domain.status === "verified" || data.domain.status === "active");
+      await loadDomains(selectedSiteId, accessToken as string);
     } catch (error) {
       setApiError(error instanceof Error ? error.message : "Unknown verify-domain error");
     } finally {
@@ -373,45 +473,83 @@ export default function DashboardPage() {
     }
   }
 
-  const previewUrl = isDomainVerified && configuredDomain
-    ? `https://${configuredDomain}`
-    : publishedSubdomain
-      ? `https://${publishedSubdomain}`
-      : null;
+  function addResearchArea() {
+    const normalized = researchInput.trim();
+    if (!normalized) {
+      return;
+    }
+
+    if (!researchAreas.includes(normalized)) {
+      setResearchAreas((current) => [...current, normalized]);
+    }
+    setResearchInput("");
+  }
+
+  function removeResearchArea(area: string) {
+    setResearchAreas((current) => current.filter((item) => item !== area));
+  }
 
   return (
     <main className="min-h-screen bg-slate-50 text-slate-900">
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-6 py-10">
-        <header className="rounded-2xl border border-slate-200 bg-white p-6">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="text-sm text-slate-600">Lab Website Publisher</p>
-              <h1 className="mt-2 text-2xl font-semibold">Dashboard</h1>
-              <p className="mt-2 text-sm text-slate-600">
-                Build your site, publish, and connect a custom domain.
-              </p>
-            </div>
-            {previewUrl ? (
-              <a
-                href={previewUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700"
-              >
-                Preview site
-              </a>
-            ) : null}
-          </div>
-        </header>
+      <div className="mx-auto grid w-full max-w-7xl gap-6 px-6 py-8 lg:grid-cols-[240px_1fr]">
+        <aside className="rounded-2xl border border-slate-200 bg-white p-4">
+          <p className="px-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
+            Dashboard
+          </p>
+          <nav className="mt-4 space-y-1">
+            <button
+              type="button"
+              onClick={() => setActiveMenu("home")}
+              className={`w-full rounded-lg px-3 py-2 text-left text-sm ${
+                activeMenu === "home"
+                  ? "bg-sky-50 text-sky-700"
+                  : "text-slate-700 hover:bg-slate-50"
+              }`}
+            >
+              Home
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveMenu("research")}
+              className={`w-full rounded-lg px-3 py-2 text-left text-sm ${
+                activeMenu === "research"
+                  ? "bg-sky-50 text-sky-700"
+                  : "text-slate-700 hover:bg-slate-50"
+              }`}
+            >
+              Research
+            </button>
+          </nav>
+        </aside>
 
-        <section className="rounded-2xl border border-slate-200 bg-white p-6">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-medium">1) Login</h2>
-              <p className="text-sm text-slate-600">Supabase email/password authentication.</p>
+        <section className="space-y-6">
+          <header className="rounded-2xl border border-slate-200 bg-white p-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-sm text-slate-600">Lab Website Publisher</p>
+                <h1 className="mt-2 text-2xl font-semibold">Workspace</h1>
+                <p className="mt-2 text-sm text-slate-600">
+                  Manage multiple lab websites and domains.
+                </p>
+              </div>
+              {previewUrl ? (
+                <a
+                  href={previewUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700"
+                >
+                  Preview site
+                </a>
+              ) : null}
             </div>
+          </header>
+
+          <section className="rounded-2xl border border-slate-200 bg-white p-6">
+            <h2 className="text-lg font-medium">Account</h2>
+            <p className="text-sm text-slate-600">Sign in to manage your sites.</p>
             {session ? (
-              <div className="flex items-center gap-3">
+              <div className="mt-4 flex items-center justify-between gap-3">
                 <p className="text-sm text-slate-700">
                   Signed in as <span className="font-medium">{session.user.email}</span>
                 </p>
@@ -424,8 +562,14 @@ export default function DashboardPage() {
                 </button>
               </div>
             ) : (
-              <div className="w-full max-w-xl space-y-2">
-                <div className="grid gap-2 sm:grid-cols-2">
+              <div className="mt-4 w-full max-w-2xl space-y-2">
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <input
+                    value={authName}
+                    onChange={(event) => setAuthName(event.target.value)}
+                    placeholder="Your full name"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none ring-sky-400 focus:ring-2"
+                  />
                   <input
                     type="email"
                     value={authEmail}
@@ -461,202 +605,320 @@ export default function DashboardPage() {
                 </div>
               </div>
             )}
-          </div>
-          {authError ? (
-            <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-              {authError}
+            {authError ? (
+              <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                {authError}
+              </div>
+            ) : null}
+          </section>
+
+          <section className="rounded-2xl border border-slate-200 bg-white p-6">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-medium">Your Websites</h2>
+              <button
+                type="button"
+                onClick={clearEditorForNewSite}
+                className="rounded-lg border border-slate-300 px-3 py-2 text-sm hover:bg-slate-100"
+              >
+                + New website
+              </button>
             </div>
-          ) : null}
-        </section>
-
-        <section className="rounded-2xl border border-slate-200 bg-white p-6">
-          <h2 className="text-lg font-medium">2) Choose a template</h2>
-          <p className="mt-1 text-sm text-slate-600">Select the base style for your lab website.</p>
-          <div className="mt-4 grid gap-4 md:grid-cols-3">
-            {templates.map((template) => {
-              const isActive = template.id === selectedTemplateId;
-
-              return (
+            <div className="mt-4 grid gap-3 md:grid-cols-3">
+              {sites.map((site) => (
                 <button
-                  key={template.id}
+                  key={site.id}
                   type="button"
-                  onClick={() => setSelectedTemplateId(template.id)}
+                  onClick={async () => {
+                    hydrateEditorFromSite(site);
+                    if (accessToken) {
+                      await loadDomains(site.id, accessToken);
+                    }
+                  }}
                   className={`rounded-xl border p-4 text-left ${
-                    isActive
+                    selectedSiteId === site.id
                       ? "border-sky-400 bg-sky-50"
                       : "border-slate-200 bg-white hover:border-slate-400"
                   }`}
                 >
-                  <div className={`h-2 w-12 rounded-full ${template.accentClass}`} />
-                  <h3 className="mt-3 text-base font-medium">{template.name}</h3>
-                  <p className="mt-1 text-sm text-slate-600">{template.description}</p>
+                  <p className="text-sm font-medium">{site.lab_name}</p>
+                  <p className="mt-1 text-xs text-slate-500">{site.status}</p>
+                  <p className="mt-2 text-xs text-slate-500">
+                    {site.subdomain ?? "No subdomain yet"}
+                  </p>
                 </button>
-              );
-            })}
-          </div>
-        </section>
-
-        <section className="grid gap-6 lg:grid-cols-2">
-          <form onSubmit={handlePublish} className="rounded-2xl border border-slate-200 bg-white p-6">
-            <h2 className="text-lg font-medium">3) Add lab details</h2>
-            <p className="mt-1 text-sm text-slate-600">
-              Fill in the core details that power your selected template.
-            </p>
-            <div className="mt-5 space-y-4">
-              <label className="block text-sm">
-                <span className="mb-1 block text-slate-700">Lab name</span>
-                <input
-                  required
-                  value={labName}
-                  onChange={(event) => setLabName(event.target.value)}
-                  placeholder="Acme Diagnostics"
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 outline-none ring-sky-400 focus:ring-2"
-                />
-              </label>
-              <label className="block text-sm">
-                <span className="mb-1 block text-slate-700">Contact email</span>
-                <input
-                  required
-                  type="email"
-                  value={contactEmail}
-                  onChange={(event) => setContactEmail(event.target.value)}
-                  placeholder="team@acmelabs.com"
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 outline-none ring-sky-400 focus:ring-2"
-                />
-              </label>
-              <label className="block text-sm">
-                <span className="mb-1 block text-slate-700">Homepage headline</span>
-                <input
-                  value={headline}
-                  onChange={(event) => setHeadline(event.target.value)}
-                  placeholder="Fast, accurate, trusted diagnostics."
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 outline-none ring-sky-400 focus:ring-2"
-                />
-              </label>
-              <label className="block text-sm">
-                <span className="mb-1 block text-slate-700">About description</span>
-                <textarea
-                  rows={3}
-                  value={description}
-                  onChange={(event) => setDescription(event.target.value)}
-                  placeholder="We support physicians and researchers with verified lab results."
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 outline-none ring-sky-400 focus:ring-2"
-                />
-              </label>
+              ))}
+              {!sites.length ? (
+                <p className="rounded-xl border border-dashed border-slate-300 p-4 text-sm text-slate-500">
+                  No websites yet. Create your first one below.
+                </p>
+              ) : null}
             </div>
-            <button
-              type="submit"
-              disabled={!accessToken || isPublishing}
-              className="mt-5 rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
-            >
-              {isPublishing ? "Publishing..." : "4) Publish website"}
-            </button>
-          </form>
+          </section>
 
-          <aside className="rounded-2xl border border-slate-200 bg-white p-6">
-            <h2 className="text-lg font-medium">Live preview</h2>
-            <p className="mt-1 text-sm text-slate-600">Preview of chosen template and details.</p>
-            <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-xs uppercase tracking-wide text-slate-500">{selectedTemplate.name}</p>
-              <h3 className="mt-2 text-xl font-semibold">{labName || "Your lab name"}</h3>
-              <p className="mt-1 text-sm text-slate-700">
-                {headline || "Your headline will appear here."}
+          {activeMenu === "research" ? (
+            <section className="rounded-2xl border border-slate-200 bg-white p-6">
+              <h2 className="text-lg font-medium">Research Areas</h2>
+              <p className="mt-1 text-sm text-slate-600">
+                Manage research focus areas saved into template data.
               </p>
-              <p className="mt-3 text-sm text-slate-600">
-                {description || "Add a short description to explain your lab specialties."}
-              </p>
-              <p className="mt-4 text-xs text-slate-500">{contactEmail || "contact@example.com"}</p>
-            </div>
-            {publishedSubdomain ? (
-              <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm">
-                Published successfully: <span className="font-medium">{publishedSubdomain}</span>
-              </div>
-            ) : (
-              <div className="mt-4 rounded-lg border border-slate-200 bg-slate-100 p-3 text-sm text-slate-600">
-                Publish to generate your managed subdomain.
-              </div>
-            )}
-          </aside>
-        </section>
-
-        <section className="rounded-2xl border border-slate-200 bg-white p-6">
-          <h2 className="text-lg font-medium">5) Connect custom domain (Vercel flow)</h2>
-          <p className="mt-1 text-sm text-slate-600">
-            Enter a domain, then configure DNS records returned by Vercel.
-          </p>
-          <div className="mt-4 flex flex-col gap-3 md:flex-row">
-            <input
-              value={domainInput}
-              onChange={(event) => setDomainInput(event.target.value)}
-              placeholder="labname.com"
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 outline-none ring-sky-400 focus:ring-2"
-            />
-            <button
-              type="button"
-              onClick={handleAddDomain}
-              disabled={!publishedSubdomain || isAddingDomain}
-              className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
-            >
-              {isAddingDomain ? "Adding..." : "Add domain"}
-            </button>
-          </div>
-
-          {configuredDomain ? (
-            <div className="mt-4 space-y-3">
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-                <p className="text-sm text-slate-700">
-                  Domain: <span className="font-medium">{configuredDomain}</span>
-                </p>
-                <p className="mt-1 text-xs text-slate-500">
-                  Provider: {domainProvider === "vercel" ? "Vercel API" : "Mock (set Vercel envs)"}
-                </p>
-                <p className="mt-1 text-sm text-slate-600">
-                  Configure these DNS records at your registrar:
-                </p>
-                <div className="mt-3 overflow-x-auto">
-                  <table className="w-full min-w-[360px] text-left text-sm">
-                    <thead className="text-slate-500">
-                      <tr>
-                        <th className="pb-2">Type</th>
-                        <th className="pb-2">Name</th>
-                        <th className="pb-2">Value</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {dnsRecords.map((record) => (
-                        <tr key={`${record.type}-${record.name}-${record.value}`}>
-                          <td className="py-1 pr-3">{record.type}</td>
-                          <td className="py-1 pr-3">{record.name}</td>
-                          <td className="py-1 text-slate-700">{record.value}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+              <div className="mt-4 flex gap-2">
+                <input
+                  value={researchInput}
+                  onChange={(event) => setResearchInput(event.target.value)}
+                  placeholder="e.g. Genomic Oncology"
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none ring-sky-400 focus:ring-2"
+                />
                 <button
                   type="button"
-                  onClick={handleVerifyDomain}
-                  disabled={isVerifyingDomain}
-                  className="mt-4 rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-white"
+                  onClick={addResearchArea}
+                  className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white"
                 >
-                  {isVerifyingDomain ? "Verifying..." : "Verify DNS"}
+                  Add
                 </button>
               </div>
-              <div
-                className={`rounded-lg border p-3 text-sm ${
-                  isDomainVerified
-                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                    : "border-amber-200 bg-amber-50 text-amber-700"
-                }`}
-              >
-                {isDomainVerified
-                  ? `Domain active with HTTPS: https://${configuredDomain}`
-                  : "Waiting for DNS propagation. Click verify after updating records."}
+              <div className="mt-4 grid gap-2 md:grid-cols-2">
+                {researchAreas.map((area) => (
+                  <div
+                    key={area}
+                    className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
+                  >
+                    <p className="text-sm text-slate-700">{area}</p>
+                    <button
+                      type="button"
+                      onClick={() => removeResearchArea(area)}
+                      className="text-xs text-red-600 hover:text-red-800"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
               </div>
-            </div>
-          ) : null}
+            </section>
+          ) : (
+            <>
+              <section className="rounded-2xl border border-slate-200 bg-white p-6">
+                <h2 className="text-lg font-medium">Template & Content</h2>
+                <div className="mt-4 grid gap-4 md:grid-cols-3">
+                  {templates.map((template) => {
+                    const isActive = template.id === selectedTemplateId;
+                    return (
+                      <button
+                        key={template.id}
+                        type="button"
+                        onClick={() => setSelectedTemplateId(template.id)}
+                        className={`rounded-xl border p-4 text-left ${
+                          isActive
+                            ? "border-sky-400 bg-sky-50"
+                            : "border-slate-200 bg-white hover:border-slate-400"
+                        }`}
+                      >
+                        <div className={`h-2 w-12 rounded-full ${template.accentClass}`} />
+                        <h3 className="mt-3 text-base font-medium">{template.name}</h3>
+                        <p className="mt-1 text-sm text-slate-600">{template.description}</p>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <form onSubmit={handlePublish} className="mt-6 space-y-4">
+                  <label className="block text-sm">
+                    <span className="mb-1 block text-slate-700">Lab name</span>
+                    <input
+                      required
+                      value={labName}
+                      onChange={(event) => setLabName(event.target.value)}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 outline-none ring-sky-400 focus:ring-2"
+                    />
+                  </label>
+                  <label className="block text-sm">
+                    <span className="mb-1 block text-slate-700">Contact email</span>
+                    <input
+                      required
+                      type="email"
+                      value={contactEmail}
+                      onChange={(event) => setContactEmail(event.target.value)}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 outline-none ring-sky-400 focus:ring-2"
+                    />
+                  </label>
+                  <label className="block text-sm">
+                    <span className="mb-1 block text-slate-700">Headline</span>
+                    <input
+                      value={headline}
+                      onChange={(event) => setHeadline(event.target.value)}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 outline-none ring-sky-400 focus:ring-2"
+                    />
+                  </label>
+                  <label className="block text-sm">
+                    <span className="mb-1 block text-slate-700">Description</span>
+                    <textarea
+                      rows={3}
+                      value={description}
+                      onChange={(event) => setDescription(event.target.value)}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 outline-none ring-sky-400 focus:ring-2"
+                    />
+                  </label>
+
+                  <div>
+                    <p className="mb-2 text-sm font-medium text-slate-700">
+                      Publish with available wildcard (optional)
+                    </p>
+                    <select
+                      value={selectedWildcardHostname}
+                      onChange={(event) => setSelectedWildcardHostname(event.target.value)}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none ring-sky-400 focus:ring-2"
+                    >
+                      <option value="">Auto-generate from lab name</option>
+                      {wildcards.map((wildcard) => (
+                        <option
+                          key={wildcard.id}
+                          value={wildcard.hostname}
+                          disabled={wildcard.status !== "available"}
+                        >
+                          {wildcard.hostname} ({wildcard.status})
+                        </option>
+                      ))}
+                    </select>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {wildcards.map((wildcard) => (
+                        <span
+                          key={`${wildcard.hostname}-badge`}
+                          className={`rounded-full px-2 py-1 text-xs ${
+                            wildcard.status === "available"
+                              ? "bg-emerald-100 text-emerald-700"
+                              : "bg-slate-200 text-slate-600"
+                          }`}
+                        >
+                          {wildcard.hostname}: {wildcard.status}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowDraftPreview((current) => !current)}
+                      className="rounded-lg border border-slate-300 px-4 py-2 text-sm hover:bg-slate-100"
+                    >
+                      {showDraftPreview ? "Hide preview" : "Preview before publish"}
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={!accessToken || isPublishing}
+                      className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white disabled:bg-slate-300"
+                    >
+                      {isPublishing ? "Publishing..." : "Publish as new site"}
+                    </button>
+                  </div>
+                </form>
+              </section>
+
+              {showDraftPreview ? (
+                <section className="rounded-2xl border border-slate-200 bg-white p-6">
+                  <h2 className="text-lg font-medium">Draft Preview</h2>
+                  <p className="mt-2 text-sm text-slate-700">{labName || "Your lab name"}</p>
+                  <p className="text-sm text-slate-600">{headline || "Headline preview"}</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {researchAreas.map((area) => (
+                      <span
+                        key={area}
+                        className="rounded-full border border-slate-300 px-3 py-1 text-xs text-slate-700"
+                      >
+                        {area}
+                      </span>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+
+              <section className="rounded-2xl border border-slate-200 bg-white p-6">
+                <h2 className="text-lg font-medium">Domain Setup</h2>
+                <p className="text-sm text-slate-600">
+                  Domain setup is now accurate per selected website card.
+                </p>
+                <div className="mt-4 flex flex-col gap-3 md:flex-row">
+                  <input
+                    value={domainInput}
+                    onChange={(event) => setDomainInput(event.target.value)}
+                    placeholder="example.com"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 outline-none ring-sky-400 focus:ring-2"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddDomain}
+                    disabled={!selectedSiteId || isAddingDomain}
+                    className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white disabled:bg-slate-300"
+                  >
+                    {isAddingDomain ? "Adding..." : "Add domain"}
+                  </button>
+                </div>
+
+                {domains.length ? (
+                  <div className="mt-4 space-y-4">
+                    <div className="flex flex-wrap gap-2">
+                      {domains.map((domain) => (
+                        <button
+                          key={domain.domain}
+                          type="button"
+                          onClick={() => setSelectedDomain(domain.domain)}
+                          className={`rounded-lg border px-3 py-1 text-xs ${
+                            selectedDomain === domain.domain
+                              ? "border-sky-400 bg-sky-50 text-sky-700"
+                              : "border-slate-300 text-slate-700"
+                          }`}
+                        >
+                          {domain.domain} ({domain.status})
+                        </button>
+                      ))}
+                    </div>
+
+                    {currentDomainRecord ? (
+                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                        <p className="text-sm font-medium">{currentDomainRecord.domain}</p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          Status: {currentDomainRecord.status}
+                        </p>
+                        <div className="mt-3 overflow-x-auto">
+                          <table className="w-full min-w-[360px] text-left text-sm">
+                            <thead className="text-slate-500">
+                              <tr>
+                                <th className="pb-2">Type</th>
+                                <th className="pb-2">Name</th>
+                                <th className="pb-2">Value</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {currentDomainRecord.records.map((record) => (
+                                <tr key={`${record.type}-${record.name}-${record.value}`}>
+                                  <td className="py-1 pr-3">{record.type}</td>
+                                  <td className="py-1 pr-3">{record.name}</td>
+                                  <td className="py-1 text-slate-700">{record.value}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleVerifyDomain}
+                          disabled={isVerifyingDomain}
+                          className="mt-4 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white"
+                        >
+                          {isVerifyingDomain ? "Verifying..." : "Verify DNS"}
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="mt-4 text-sm text-slate-500">
+                    No domains added for this site yet.
+                  </p>
+                )}
+              </section>
+            </>
+          )}
+
           {apiError ? (
-            <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
               {apiError}
             </div>
           ) : null}

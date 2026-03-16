@@ -1,4 +1,8 @@
-export type TemplateId = "clinical-blue" | "research-light" | "diagnostics-pro";
+export type TemplateId =
+  | "clinical-blue"
+  | "research-light"
+  | "diagnostics-pro"
+  | "modern-elegant-lab";
 
 export type SiteRecord = {
   id: string;

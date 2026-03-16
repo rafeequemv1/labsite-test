@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { getSiteForUser, upsertDomainForSite } from "@/lib/repository";
+import { getSiteForUser, listDomainsForSite, upsertDomainForSite } from "@/lib/repository";
 import { getRequestUser } from "@/lib/supabase-server";
 import { addDomainToVercel } from "@/lib/vercel";
 
@@ -55,5 +55,24 @@ export async function POST(request: Request, { params }: Params) {
       { error: message },
       { status },
     );
+  }
+}
+
+export async function GET(request: Request, { params }: Params) {
+  try {
+    const user = await getRequestUser(request);
+    const { siteId } = await params;
+    const site = await getSiteForUser(siteId, user.id);
+
+    if (!site) {
+      return NextResponse.json({ error: "Site not found" }, { status: 404 });
+    }
+
+    const domains = await listDomainsForSite(siteId);
+    return NextResponse.json({ domains });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to load domains";
+    const status = message.startsWith("Unauthorized") ? 401 : 500;
+    return NextResponse.json({ error: message }, { status });
   }
 }

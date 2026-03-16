@@ -5,6 +5,7 @@ MVP app to let labs log in, pick a template, fill details, publish, and connect 
 ## Workspace
 
 - `apps/web`: Next.js frontend and API routes.
+- `apps/web/src/templates`: template registry, defaults, and full template page components.
 - `packages/shared`: shared domain types.
 - `packages/db`: data model/types layer (placeholder for Supabase integration).
 - `packages/publisher`: publishing adapter (placeholder for Vercel deployment logic).
@@ -29,6 +30,8 @@ MVP app to let labs log in, pick a template, fill details, publish, and connect 
 4. Restart `npm run dev`.
 
 The app now uses Supabase auth (email/password) and persists sites/domains per logged-in user.
+Sites also store `template_data` (JSON) to support per-template extra sections and layout-specific content.
+Users can create multiple websites and choose from available wildcard hostnames at publish time.
 
 ## Multi-tenant Domain Routing
 
